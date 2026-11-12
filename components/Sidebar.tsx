@@ -6,7 +6,7 @@ import { USER_MANUAL_URL, OFFICIAL_WEBSITE_URL, CREATIVE_HOME_URL, COPYRIGHT_TEX
 
 interface SidebarProps {
   currentStage: string;
-  setStage: (stage: 'script' | 'assets' | 'director' | 'export' | 'prompts') => void;
+  setStage: (stage: 'outline' | 'script' | 'assets' | 'director' | 'export' | 'prompts') => void;
   onExit: () => void;
   projectName?: string;
   onShowOnboarding?: () => void;
@@ -19,6 +19,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ currentStage, setStage, onExit, projectName, onShowOnboarding, onShowModelConfig, isNavigationLocked, episodeInfo, onGoToProject }) => {
   const { theme, toggleTheme } = useTheme();
   const navItems = [
+    { id: 'outline', label: '改编大纲', icon: BookOpen, sub: '阶段 00' },
     { id: 'script', label: '剧本与故事', icon: FileText, sub: '阶段 01' },
     { id: 'assets', label: '角色与场景', icon: Users, sub: '阶段 02' },
     { id: 'director', label: '导演工作台', icon: Clapperboard, sub: '阶段 03' },

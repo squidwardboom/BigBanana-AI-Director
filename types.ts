@@ -439,7 +439,7 @@ export interface Episode {
   title: string;
   createdAt: number;
   lastModified: number;
-  stage: 'script' | 'assets' | 'director' | 'export' | 'prompts';
+  stage: 'outline' | 'script' | 'assets' | 'director' | 'export' | 'prompts';
   rawScript: string;
   targetDuration: string;
   language: string;
@@ -454,6 +454,8 @@ export interface Episode {
   propRefs: EpisodePropRef[];
   promptTemplateOverrides?: PromptTemplateOverrides;
   scriptGenerationCheckpoint?: ScriptGenerationCheckpoint | null;
+  /** 烁皓改编大纲（shuohao-skills 流水线移植）：小说 → 五件套大纲 + 确定性质量门 */
+  adaptation?: AdaptationOutline | null;
 }
 
 export type ProjectState = Episode;
@@ -532,4 +534,146 @@ export interface ModelManagerState {
   currentConfig: ModelConfig;
   defaultAspectRatio: AspectRatio;
   defaultVideoDuration: VideoDuration;
+}
+
+// ============================================
+// 烁皓改编大纲（shuohao-skills · novel-outline 流水线移植）
+// 数据结构与质量门口径与 outline.json 对齐：
+// 模型只管填这份结构，Markdown/报告由渲染层出，资产清单由代码汇总，
+// 每一道质量门都是确定性代码，不给模型自觉留机会。
+// ============================================
+
+export type CharacterTier = 'lead' | 'support' | 'functional';
+
+/** 阈值与 shuohao-skills DEFAULT_THRESHOLDS 同款；maxPrimaryScenes 缺省随集数动态 */
+export interface OutlineThresholds {
+  maxLeads: number;
+  maxSupport: number;
+  maxFunctional: number;
+  maxBeatGap: number;
+  maxPrimaryScenes: number;
+  maxProps: number;
+}
+
+export interface OutlineParams {
+  episodes: number;
+  minutesPerEpisode: number;
+  genre: string;
+  adaptMode: '忠实' | '抽核' | '借壳';
+  preferences: string[];
+  thresholds?: Partial<OutlineThresholds>;
+}
+
+export interface OutlineKeepCut {
+  what: string;
+  why: string;
+  /** 原文逐字片段——关键取舍必须能指回原文，禁止凭书名脑补 */
+  evidence?: string;
+}
+
+export interface OutlineAdaptation {
+  core: string;
+  keep: OutlineKeepCut[];
+  cut: OutlineKeepCut[];
+  merge: OutlineKeepCut[];
+  risks: { what: string; plan: string }[];
+  /** 砍线的结论句（「这意味着：全剧终点是……」） */
+  cutNote?: string;
+  /** 合人补注，通常写主角组入选理由 */
+  mergeNote?: string;
+}
+
+export interface OutlineCharacter {
+  id: string;
+  name: string;
+  role: string;
+  tier: CharacterTier;
+  /** lead/support 必填；functional 可省——医生就是来缝针的 */
+  arc?: string;
+  /** ← 改动记录：原著对应谁、合并了谁；纯原创写 ["原创"] */
+  from: string[];
+}
+
+export interface OutlineScene {
+  id: string;
+  name: string;
+  primary: boolean;
+  /** 全剧只出现一次的场景必须带规避方案 */
+  reusePlan?: string;
+}
+
+export interface OutlineProp {
+  id: string;
+  name: string;
+  /** 这件物件在戏里承载什么——填不出来说明它是场景陈设，不进这张表 */
+  function: string;
+  beatIds?: string[];
+}
+
+export interface OutlineBeat {
+  id: string;
+  type: string;
+  weight: 'major' | 'minor';
+  episode: number;
+  setup?: string;
+  payoff?: string;
+}
+
+export interface OutlineEpisode {
+  ep: number;
+  synopsis: string;
+  hook: string;
+  suspense: string;
+  sceneIds: string[];
+  characterIds: string[];
+  propIds?: string[];
+  /** characterIds ≥ 3 的集必填：同框拆解方案（分处不同场次也算） */
+  crowdPlan?: string;
+  /** 生成难点预警（雨戏/肢体接触/人群/手部特写），宁可多报 */
+  warnings?: string[];
+}
+
+/** 一道质量门的运行结果（id 与 shuohao-skills 保持一致，是对账凭据） */
+export interface OutlineGateResult {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail?: string;
+}
+
+/** 资产清单条目——由代码汇总，不让模型写 */
+export interface OutlineAssetRow {
+  kind: 'character' | 'scene' | 'prop';
+  id: string;
+  name: string;
+  /** 出现的集号列表 */
+  episodes: number[];
+  /** 出现次数 */
+  count: number;
+  /** 角色分档的资产量折算 / 一次性场景的复用方案 / 道具的戏剧功能 */
+  note?: string;
+  /** 生成难点预警（哪些集出现） */
+  warnings?: string[];
+}
+
+export interface AdaptationOutline {
+  params: OutlineParams;
+  /** 骨架拍板阶段就绪；episodes 写完前保持 episodes 为空数组 */
+  adaptation: OutlineAdaptation | null;
+  characters: OutlineCharacter[];
+  scenes: OutlineScene[];
+  props?: OutlineProp[];
+  beats: OutlineBeat[];
+  episodes: OutlineEpisode[];
+  /** 骨架快版已获用户拍板；拍板前禁止写分集（流程门，不是口头约定） */
+  skeletonApproved?: boolean;
+  /** 分卷中间摘要缓存（长文本两层 map-reduce 的第一层产物） */
+  volumeSummaries?: string[];
+  /** 最近一次质量门运行结果 */
+  gates?: OutlineGateResult[];
+  gatesStage?: 'skeleton' | 'beats' | 'full';
+  gatesPassedAt?: number;
+  /** 代码汇总的资产清单 */
+  assetInventory?: OutlineAssetRow[];
+  updatedAt?: number;
 }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Routes, Route, useNavigate, useParams } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
+import StageOutline from './components/StageOutline';
 import StageScript from './components/StageScript';
 import StageAssets from './components/StageAssets';
 import StageDirector from './components/StageDirector';
@@ -183,7 +184,7 @@ function EpisodeWorkspace() {
     updateEpisode(updates);
   };
 
-  const setStage = (stage: 'script' | 'assets' | 'director' | 'export' | 'prompts') => {
+  const setStage = (stage: 'outline' | 'script' | 'assets' | 'director' | 'export' | 'prompts') => {
     if (isGenerating) {
       showAlert('当前正在执行生成任务，切换页面会导致生成数据丢失。\n\n确定要离开当前页面吗？', {
         title: '生成任务进行中', type: 'warning', showCancel: true, confirmText: '确定离开', cancelText: '继续等待',
@@ -222,6 +223,8 @@ function EpisodeWorkspace() {
 
   const renderStage = () => {
     switch (currentEpisode.stage) {
+      case 'outline':
+        return <StageOutline project={currentEpisode} updateProject={handleUpdateProject} onGeneratingChange={setIsGenerating} />;
       case 'script':
         return <StageScript project={currentEpisode} updateProject={handleUpdateProject} onShowModelConfig={() => setShowModelConfig(true)} onGeneratingChange={setIsGenerating} />;
       case 'assets':
