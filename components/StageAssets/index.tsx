@@ -19,6 +19,7 @@ import PropCard from './PropCard';
 import WardrobeModal from './WardrobeModal';
 import TurnaroundModal from './TurnaroundModal';
 import { useAlert } from '../GlobalAlert';
+import ShuohaoEngineBar from '../ShuohaoEngineBar';
 import { getAllAssetLibraryItems, saveAssetToLibrary, deleteAssetFromLibrary } from '../../services/storageService';
 import { applyLibraryItemToProject, createLibraryItemFromCharacter, createLibraryItemFromScene, createLibraryItemFromProp, cloneCharacterForProject } from '../../services/assetLibraryService';
 import { AspectRatioSelector } from '../AspectRatioSelector';
@@ -1540,6 +1541,7 @@ const StageAssets: React.FC<Props> = ({ project, updateProject, onApiKeyError, o
 
   return (
     <div className={STYLES.mainContainer}>
+      <ShuohaoEngineBar projectId={project.id} projectTitle={project.title} tab="assets" />
       
       {/* Image Preview Modal */}
       <ImagePreviewModal 

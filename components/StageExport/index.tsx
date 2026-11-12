@@ -23,6 +23,7 @@ import SecondaryOptions from './SecondaryOptions';
 import VideoPlayerModal from './VideoPlayerModal';
 import RenderLogsModal from './RenderLogsModal';
 import { useAlert } from '../GlobalAlert';
+import ShuohaoEngineBar from '../ShuohaoEngineBar';
 import {
   useBackupTransfer,
   EPISODE_BACKUP_TRANSFER_MESSAGES,
@@ -200,6 +201,7 @@ const StageExport: React.FC<Props> = ({ project }) => {
 
   return (
     <div className={STYLES.container}>
+      <ShuohaoEngineBar projectId={project.id} projectTitle={project.title} tab="export" />
       {/* Header */}
       <div className={STYLES.header.container}>
         <div className="flex items-center gap-4">

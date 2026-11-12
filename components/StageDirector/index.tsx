@@ -41,6 +41,7 @@ import ImagePreviewModal from './ImagePreviewModal';
 import { findSceneByIdCompat } from '../../services/storyboardIdUtils';
 import NineGridPreview from './NineGridPreview';
 import { useAlert } from '../GlobalAlert';
+import ShuohaoEngineBar from '../ShuohaoEngineBar';
 import { AspectRatioSelector } from '../AspectRatioSelector';
 import { getUserAspectRatio, setUserAspectRatio, getModelById, getActiveImageModel, getActiveAudioModel } from '../../services/modelRegistry';
 import { persistVideoReference } from '../../services/videoStorageService';
@@ -1711,6 +1712,7 @@ const StageDirector: React.FC<Props> = ({ project, updateProject, onApiKeyError,
 
   return (
     <div className="flex flex-col h-full bg-[var(--bg-secondary)] relative overflow-hidden">
+      <ShuohaoEngineBar projectId={project.id} projectTitle={project.title} tab="director" />
       
       {/* Batch Progress Overlay */}
       {batchProgress && (

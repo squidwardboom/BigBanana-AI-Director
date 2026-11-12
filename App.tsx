@@ -22,6 +22,7 @@ import { useAlert } from './components/GlobalAlert';
 import { ProjectProvider, useProjectContext } from './contexts/ProjectContext';
 import { checkCharacterSync, checkSceneSync, checkPropSync } from './services/characterSyncService';
 import AssetSyncBanner from './components/CharacterLibrary/AssetSyncBanner';
+import ShuohaoEngineBar from './components/ShuohaoEngineBar';
 import logoImg from './logo.png';
 
 const isNineGridGenerating = (status?: string): boolean =>
@@ -226,7 +227,14 @@ function EpisodeWorkspace() {
       case 'outline':
         return <StageOutline project={currentEpisode} updateProject={handleUpdateProject} onGeneratingChange={setIsGenerating} />;
       case 'script':
-        return <StageScript project={currentEpisode} updateProject={handleUpdateProject} onShowModelConfig={() => setShowModelConfig(true)} onGeneratingChange={setIsGenerating} />;
+        // StageScript 根节点不是弹性容器且子元素自带 h-full，不便内插横幅，
+        // 这里用两行网格把引擎条垫在顶部，剩余高度原样交给 StageScript。
+        return (
+          <div className="h-full grid grid-rows-[auto_minmax(0,1fr)] bg-[var(--bg-base)]">
+            <ShuohaoEngineBar projectId={currentEpisode.id} projectTitle={currentEpisode.title} tab="script" />
+            <StageScript project={currentEpisode} updateProject={handleUpdateProject} onShowModelConfig={() => setShowModelConfig(true)} onGeneratingChange={setIsGenerating} />
+          </div>
+        );
       case 'assets':
         return <StageAssets project={currentEpisode} updateProject={handleUpdateProject} onGeneratingChange={setIsGenerating} />;
       case 'director':
