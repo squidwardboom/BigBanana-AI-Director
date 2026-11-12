@@ -99,6 +99,26 @@
 
 涉及文件：`server/shuohaoServer.mjs`（技能引擎服务）、`services/shuohaoBridge.ts`（前端桥接）、`services/shuohaoGates.ts`（质量门移植/降级）、`services/adaptationService.ts`（分卷/骨架/分批/修复流水线）、`components/StageOutline.tsx`（阶段 UI）、`docs/改编大纲-烁皓技能集成.md`（设计说明）。
 
+## 🎬 端到端全流程测试（scripts/e2e-shortfilm.mjs + scripts/media-shortfilm.mjs）
+
+一条命令从小说跑到投产包，再一条命令出片——这是「功能层接入」的自证测试，也是使用范本：
+
+```bash
+npm run shuohao                                   # 1) 启动技能引擎（真实技能 CLI）
+# env: GLM_API_KEY / GLM_BASE_URL / GLM_MODEL（OpenAI 兼容端点即可）
+node scripts/e2e-shortfilm.mjs --until outline    # 2) 小说→分卷→骨架→拍板→分集→质量门→报告
+node scripts/e2e-shortfilm.mjs --until export     # 3) 角色→美术→剧本→站位(走位句)→分镜→H3 投产包
+node scripts/media-shortfilm.mjs --kf             # 4) 本地 ComfyUI 逐分镜出图（z_image turbo）
+node scripts/media-shortfilm.mjs --seg E01-01     # 5) 单段试水：本地 MiniMax H3 首尾帧→视频+音频
+node scripts/media-shortfilm.mjs --all            # 6) 全部段视频
+node scripts/media-shortfilm.mjs --film           # 7) ffmpeg 合成成片
+node scripts/media-shortfilm.mjs --slideshow      # 备选：GPU 太慢时，分镜图推拉镜版成片（CPU）
+```
+
+- 创作全部走配置的对话模型（GLM 实测），**确定性环节全部走真实技能 CLI**（校验口径与技能仓库零偏差），未过项带 ✗ 原文自动回炉；
+- 本地 ComfyUI（127.0.0.1:8188）为可选媒体引擎：`extra_model_paths.yaml` 挂共享模型库，出图 z_image turbo（~20s/张），视频 MiniMax H3 fl2va（首尾帧+音画同出，ROCm 上单段较慢）；
+- 断点续跑：进度写在 `scripts/progress-<workspace>.json`，重跑自动跳过已完成阶段。
+
 ## 技术架构
 
 *   **Frontend**: React 19, Tailwind CSS (Sony Industrial Design Style)
