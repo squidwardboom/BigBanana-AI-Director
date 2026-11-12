@@ -245,18 +245,29 @@ async function handleFileWrite(req, res, id) {
   const root = path.join(WORKSPACES_DIR, safeWorkspaceId(id));
   const abs = safeRelPath(root, body.path);
   fs.mkdirSync(path.dirname(abs), { recursive: true });
+  if (typeof body.contentB64 === 'string') {
+    // 二进制产物（分镜图 / 段视频）走 base64
+    fs.writeFileSync(abs, Buffer.from(body.contentB64, 'base64'));
+    return writeJson(res, 200, { ok: true, path: body.path, bytes: Buffer.byteLength(body.contentB64, 'base64') });
+  }
   const content = String(body.content ?? '').replace(/^\uFEFF/, '');
   fs.writeFileSync(abs, content, 'utf8'); // 无 BOM：技能脚本的 JSON.parse 不吃 BOM
   writeJson(res, 200, { ok: true, path: body.path, bytes: Buffer.byteLength(content, 'utf8') });
 }
+
+const BINARY_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.mp4', '.webm', '.gif', '.wav', '.mp3']);
 
 async function handleFileRead(res, id, rel) {
   const root = path.join(WORKSPACES_DIR, safeWorkspaceId(id));
   const abs = safeRelPath(root, rel);
   if (!fs.existsSync(abs)) { writeJson(res, 404, { error: '文件不存在' }); return; }
   const st = fs.statSync(abs);
+  if (BINARY_EXT.has(path.extname(abs).toLowerCase())) {
+    // 二进制产物（分镜图/段视频）走 base64，放宽到 300MB
+    return writeJson(res, 200, { path: rel, kind: 'binary', size: st.size, contentB64: (await fsp.readFile(abs)).toString('base64') });
+  }
   if (st.size > 4 * 1024 * 1024) { writeJson(res, 413, { error: '文件过大，请用 /workspace 静态入口' }); return; }
-  writeJson(res, 200, { path: rel, content: await fsp.readFile(abs, 'utf8'), size: st.size });
+  writeJson(res, 200, { path: rel, kind: 'text', content: await fsp.readFile(abs, 'utf8'), size: st.size });
 }
 
 async function handleFileList(res, id) {
