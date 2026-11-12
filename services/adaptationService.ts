@@ -11,9 +11,13 @@
 import {
   AdaptationOutline,
   OutlineBeat,
+  OutlineCharacter,
   OutlineEpisode,
   OutlineGateResult,
   OutlineParams,
+  OutlineScene,
+  OutlineProp,
+  OutlineThresholds,
   OutlineAssetRow,
 } from '../types';
 import { chatCompletion, parseJsonWithRecovery, retryOperation } from './ai/apiCore';
@@ -434,3 +438,111 @@ export function assembleOutline(
     updatedAt: Date.now(),
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* 引擎模式：用真实技能 CLI 的质量门输出驱动修复                         */
+/* ------------------------------------------------------------------ */
+
+const skeletonPromptBase = (params: OutlineParams, th: OutlineThresholds): string =>
+  [
+    '你是短剧改编总编剧。根据小说素材摘要与改编参数，产出「改编骨架快版」——只出骨架，不写分集梗概。',
+    `改编参数：总集数 ${params.episodes}；单集约 ${params.minutesPerEpisode} 分钟；题材：${params.genre}；改编方式：${params.adaptMode}。`,
+    params.preferences.length ? `用户点名要保：${params.preferences.join('、')}。` : '',
+    '',
+    '硬规则（违反任何一条都会被确定性校验拦截）：',
+    `- 人物三档：主角组(lead) 1–${th.maxLeads} 人（arc 必填）；重要配角(support) ≤ ${th.maxSupport}（arc 必填）；功能性角色(functional) ≤ ${th.maxFunctional}（占脸不占名，name 用称呼标签，arc 可省）。无名背景人不进表。`,
+    `- 主场景(primary=true) ≤ ${primarySceneCap(params.episodes)} 个；只出现一次的场景必须写 reusePlan。`,
+    `- 叙事道具 ≤ ${th.maxProps} 件，function 必填，beatIds 指向真实爽点 id。`,
+    `- 爽点：相邻集号间隔 ≤ ${th.maxBeatGap}；第一个爽点不晚于第 ${th.maxBeatGap} 集；最后一个爽点距最后一集 < ${th.maxBeatGap}；至少一个 major 且最早的 major 不落最后一集。episode 用 1..${params.episodes}。`,
+    '- keep 至少 1 条且必须带 evidence（原文逐字片段）；改编方式不是「忠实」时 cut 不能为空。',
+    '- from 数组记录改动来源；纯原创写 ["原创"]。',
+  ].filter(Boolean).join('\n');
+
+/** 引擎 validate --stage skeleton 的 ✗ 详情回炉：修复骨架 JSON */
+export async function repairSkeleton(
+  summaries: string[],
+  params: OutlineParams,
+  draft: { adaptation: AdaptationOutline['adaptation']; characters: OutlineCharacter[]; scenes: OutlineScene[]; props?: OutlineProp[]; beats: OutlineBeat[] },
+  gateText: string,
+  model: string,
+  abort?: AbortSignal
+): Promise<{ adaptation: AdaptationOutline['adaptation']; characters: OutlineCharacter[]; scenes: OutlineScene[]; props?: OutlineProp[]; beats: OutlineBeat[] }> {
+  const th = outlineThresholdsOf({ params } as AdaptationOutline);
+  const prompt = [
+    skeletonPromptBase(params, th),
+    '',
+    '【你上一版的骨架 JSON】',
+    JSON.stringify({ adaptation: draft.adaptation, characters: draft.characters, scenes: draft.scenes, props: draft.props, beats: draft.beats }),
+    '',
+    '【确定性质量门（novel-outline validate --stage skeleton）原始输出——✗ 项必须逐条修复】',
+    gateText,
+    '',
+    '素材摘要（节选）：',
+    summaries.join('\n\n').slice(0, 60000),
+    '',
+    `只输出修复后的完整骨架 JSON（不要围栏），结构：${skeletonSchemaText}`,
+  ].join('\n');
+  const data = await askJson(prompt, model, 0.2, abort);
+  return {
+    adaptation: data.adaptation ?? draft.adaptation,
+    characters: Array.isArray(data.characters) ? data.characters : draft.characters,
+    scenes: Array.isArray(data.scenes) ? data.scenes : draft.scenes,
+    props: Array.isArray(data.props) ? data.props : draft.props,
+    beats: Array.isArray(data.beats) ? data.beats : draft.beats,
+  };
+}
+
+/** 引擎 validate --stage full 的 ✗ 详情回炉：修复分集（整体输出全部集） */
+export async function repairEpisodes(
+  outline: AdaptationOutline,
+  episodes: OutlineEpisode[],
+  gateText: string,
+  model: string,
+  abort?: AbortSignal
+): Promise<OutlineEpisode[]> {
+  const skeletonContext = JSON.stringify({
+    adaptation: outline.adaptation,
+    characters: outline.characters,
+    scenes: outline.scenes,
+    props: outline.props ?? [],
+    beats: outline.beats,
+  });
+  const prompt = [
+    '你是短剧改编总编剧。下面的分集梗概没有通过 novel-outline 的确定性质量门，请逐条修复后输出「完整的分集梗概 JSON」（全部集数）。',
+    skeletonContext,
+    '',
+    '【当前分集梗概 JSON】',
+    JSON.stringify(episodes),
+    '',
+    '【质量门原始输出——✗ 项必须全部修复】',
+    gateText,
+    '',
+    '硬规则：梗概叙述体无引号；三栏齐全；只引用骨架已登记 id；≥3 人写 crowdPlan；扫到雨戏/肢体接触/人群/手部特写关键词必须写进 warnings；每件道具至少出现一集。',
+    '',
+    `只输出 JSON：${episodesSchemaText}（episodes 覆盖全部集数）`,
+  ].join('\n');
+  const data = await askJson(prompt, model, 0.2, abort);
+  return Array.isArray(data?.episodes) && data.episodes.length > 0 ? data.episodes : episodes;
+}
+
+/** 组装技能口径的 outline.json（source/lang 顶层字段与技能对齐，render --lang 会读它） */
+export function outlineJsonOf(outline: AdaptationOutline, title: string): Record<string, unknown> {
+  return {
+    source: title || '未命名',
+    lang: 'zh',
+    params: outline.params,
+    adaptation: outline.adaptation,
+    characters: outline.characters,
+    scenes: outline.scenes,
+    ...(outline.props?.length ? { props: outline.props } : {}),
+    beats: outline.beats,
+    episodes: outline.episodes,
+  };
+}
+
+/** 阶段主产物的规范相对路径（与服务端 artifactRel / 仓库工作目录约定一致） */
+export function artifactJsonPath(slug: string, stage: 'outline' | 'characters' | 'art' | 'script' | 'storyboard'): string {
+  const names = { outline: 'outline', characters: 'cast', art: 'art', script: 'script', storyboard: 'storyboard' };
+  return `${stage}/${slug}-${names[stage]}.json`;
+}
+

@@ -1,15 +1,23 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   BookOpen, Play, CheckCircle2, XCircle, RotateCcw, Loader2, ArrowRight,
-  ThumbsUp, AlertTriangle, FileStack, Wand2, Ban,
+  ThumbsUp, AlertTriangle, FileStack, Wand2, Ban, Cpu, PlugZap,
 } from 'lucide-react';
-import { ProjectState, AdaptationOutline, OutlineGateResult, OutlineParams, OutlineAssetRow } from '../types';
+import {
+  ProjectState, AdaptationOutline, OutlineGateResult, OutlineParams, OutlineAssetRow,
+} from '../types';
 import { useAlert } from './GlobalAlert';
 import {
   splitVolumes, summarizeVolumes, generateSkeleton, generateEpisodes,
   buildAssetInventory, composeEpisodeScriptInput, MAX_EPISODES_PER_BATCH,
+  repairSkeleton, repairEpisodes, outlineJsonOf, artifactJsonPath,
 } from '../services/adaptationService';
 import { runOutlineGates, outlineGatesPassed, primarySceneCap } from '../services/shuohaoGates';
+import {
+  probeEngine, ShuohaoEngineStatus, ensureWorkspace, writeWorkspaceFile,
+  readWorkspaceFile, listWorkspaceFiles, runOp, workspaceUrl, parseEngineGateOutput,
+} from '../services/shuohaoBridge';
+import { parseJsonWithRecovery } from '../services/ai/apiCore';
 
 interface Props {
   project: ProjectState;
@@ -31,14 +39,14 @@ const BeatTimeline: React.FC<{ outline: AdaptationOutline }> = ({ outline }) => 
     if (b.weight === 'major' || !prev) beatEp.set(b.episode, b.weight === 'major' ? 'major' : 'minor');
   }
   const sorted = [...beatEp.keys()].sort((a, b) => a - b);
-  const vacuums: { from: number; to: number; bad: boolean }[] = [];
+  const vacuums: { from: number; to: number }[] = [];
   if (sorted.length) {
-    if (sorted[0]! > gap) vacuums.push({ from: 1, to: sorted[0]! - 1, bad: true });
+    if (sorted[0]! > gap) vacuums.push({ from: 1, to: sorted[0]! - 1 });
     for (let i = 1; i < sorted.length; i++) {
       const d = sorted[i]! - sorted[i - 1]!;
-      if (d > gap) vacuums.push({ from: sorted[i - 1]! + 1, to: sorted[i]! - 1, bad: true });
+      if (d > gap) vacuums.push({ from: sorted[i - 1]! + 1, to: sorted[i]! - 1 });
     }
-    if (total - sorted[sorted.length - 1]! >= gap) vacuums.push({ from: sorted[sorted.length - 1]! + 1, to: total, bad: true });
+    if (total - sorted[sorted.length - 1]! >= gap) vacuums.push({ from: sorted[sorted.length - 1]! + 1, to: total });
   }
   const x = (ep: number) => pad + (ep - 0.5) * w;
   return (
@@ -77,7 +85,7 @@ const BeatTimeline: React.FC<{ outline: AdaptationOutline }> = ({ outline }) => 
   );
 };
 
-const GatePanel: React.FC<{ gates: OutlineGateResult[] | null | undefined }> = ({ gates }) => {
+const GatePanel: React.FC<{ gates: OutlineGateResult[] | null | undefined; source?: 'engine' | 'browser' }> = ({ gates, source }) => {
   if (!gates || gates.length === 0) return null;
   const passed = gates.every((g) => g.ok);
   return (
@@ -85,10 +93,11 @@ const GatePanel: React.FC<{ gates: OutlineGateResult[] | null | undefined }> = (
       <div className="flex items-center gap-2 text-xs font-medium">
         {passed
           ? <><CheckCircle2 className="w-4 h-4 text-[var(--success)]" /><span className="text-[var(--success)]">全部质量门通过</span></>
-          : <><AlertTriangle className="w-4 h-4 text-[#d1543c]" /><span className="text-[#d1543c]">有未过项——把 ✗ 详情交给「重新生成」自动修复</span></>}
+          : <><AlertTriangle className="w-4 h-4 text-[#d1543c]" /><span className="text-[#d1543c]">有未过项——把 ✗ 详情交给回炉修复</span></>}
+        {source && <span className="text-[10px] font-mono text-[var(--text-muted)] ml-auto">{source === 'engine' ? '来源：技能 CLI 原样输出' : '来源：浏览器内移植版'}</span>}
       </div>
-      {gates.map((g) => (
-        <div key={g.id} className="flex gap-2 text-xs leading-relaxed">
+      {gates.map((g, i) => (
+        <div key={`${g.id}-${i}`} className="flex gap-2 text-xs leading-relaxed">
           {g.ok ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 text-[var(--success)] flex-shrink-0" />
                 : <XCircle className="w-3.5 h-3.5 mt-0.5 text-[#d1543c] flex-shrink-0" />}
           <span className={g.ok ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)] font-medium'}>
@@ -100,6 +109,13 @@ const GatePanel: React.FC<{ gates: OutlineGateResult[] | null | undefined }> = (
   );
 };
 
+/** 引擎 assets 命令输出的原样 JSON（口径与 shuohao-skills 完全一致） */
+const EngineAssetsBlock: React.FC<{ data: unknown }> = ({ data }) => (
+  <pre className="rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-subtle)] p-3 text-[11px] leading-relaxed overflow-auto max-h-72 whitespace-pre-wrap font-mono text-[var(--text-secondary)]">
+    {JSON.stringify(data, null, 2)}
+  </pre>
+);
+
 const tierChip = (tier: string) => tier === 'lead'
   ? <span className="px-1.5 py-0.5 rounded text-[10px] bg-[var(--accent-bg)] text-[var(--accent-text)]">主角组</span>
   : tier === 'support'
@@ -109,6 +125,14 @@ const tierChip = (tier: string) => tier === 'lead'
 const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingChange }) => {
   const { showAlert } = useAlert();
   const outline = project.adaptation ?? null;
+
+  // 引擎探测：undefined = 探测中；null = 离线（降级到浏览器内移植版）
+  const [engine, setEngine] = useState<ShuohaoEngineStatus | null | undefined>(undefined);
+  useEffect(() => { probeEngine().then(setEngine); }, []);
+  const engineOn = !!engine?.ok && engine?.skillsDirOk === true;
+  const workspaceId = project.id;
+  const slug = (project.title || 'project').replace(/[\\/:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'project';
+
   const [busy, setBusy] = useState(false);
   const [progressMsg, setProgressMsg] = useState('');
   const [progressPct, setProgressPct] = useState(0);
@@ -131,7 +155,8 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
   });
 
   const novelChars = (project.rawScript || '').replace(/\s/g, '').length;
-  const episodesDone = (outline?.episodes?.length ?? 0) >= (outline?.params.episodes ?? Infinity);
+  const totalEps = outline?.params.episodes ?? 0;
+  const episodesDone = !!outline && (outline.episodes?.length ?? 0) >= totalEps && totalEps > 0;
   const canGenerate = novelChars >= 200;
 
   const withBusy = async (fn: (signal: AbortSignal, onProgress: (m: string, p?: number) => void) => Promise<void>) => {
@@ -149,61 +174,144 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
     }
   };
 
-  const currentOutline = (): AdaptationOutline => {
-    const p: OutlineParams = {
+  const currentOutline = (): AdaptationOutline => ({
+    params: {
       episodes: Math.max(1, parseInt(form.episodes) || 6),
       minutesPerEpisode: Math.max(0.5, parseFloat(form.minutesPerEpisode) || 2),
       genre: form.genre.trim(),
       adaptMode: form.adaptMode,
       preferences: form.preferences.split(/[、,，]/).map((s) => s.trim()).filter(Boolean),
-    };
-    return {
-      params: p,
-      adaptation: outline?.adaptation ?? null,
-      characters: outline?.characters ?? [],
-      scenes: outline?.scenes ?? [],
-      props: outline?.props,
-      beats: outline?.beats ?? [],
-      episodes: outline?.episodes ?? [],
-      skeletonApproved: outline?.skeletonApproved ?? false,
-      volumeSummaries: outline?.volumeSummaries ?? [],
-      gates: outline?.gates ?? null,
-      gatesStage: outline?.gatesStage,
-      gatesPassedAt: outline?.gatesPassedAt,
-      assetInventory: outline?.assetInventory,
-      updatedAt: Date.now(),
-    };
-  };
+    },
+    adaptation: outline?.adaptation ?? null,
+    characters: outline?.characters ?? [],
+    scenes: outline?.scenes ?? [],
+    props: outline?.props,
+    beats: outline?.beats ?? [],
+    episodes: outline?.episodes ?? [],
+    skeletonApproved: outline?.skeletonApproved ?? false,
+    volumeSummaries: outline?.volumeSummaries ?? [],
+    gates: outline?.gates ?? null,
+    gatesStage: outline?.gatesStage,
+    gatesPassedAt: outline?.gatesPassedAt,
+    assetInventory: outline?.assetInventory,
+    engineArtifacts: outline?.engineArtifacts ?? null,
+    updatedAt: Date.now(),
+  });
 
   const startAdaptation = () => withBusy(async (signal, onProgress) => {
     const model = project.shotGenerationModel || '';
-    onProgress('正在按章节分卷…', 0.02);
-    const volumes = splitVolumes(project.rawScript, 15);
-    onProgress(`已切 ${volumes.length} 卷，开始分卷摘要…`, 0.05);
-    const summaries = await summarizeVolumes(volumes, model, onProgress, signal);
-    onProgress('正在出骨架快版…', 0.15);
     const base = currentOutline();
-    const { adaptation, gates } = await generateSkeleton(summaries, base.params, model, onProgress, signal);
+
+    // 1) 分卷：引擎在 → 真实 chunk 命令 + 读回 vol 文件；否则浏览器内移植版
+    const volumes: string[] = [];
+    let engineArtifacts = base.engineArtifacts;
+    if (engineOn) {
+      onProgress('引擎模式：写入小说原文，调用 novel-outline chunk 分卷…', 0.02);
+      await ensureWorkspace(workspaceId);
+      await writeWorkspaceFile(workspaceId, 'novel.txt', project.rawScript);
+      const ch = await runOp({ op: 'outline_chunk', workspace: workspaceId, slug, novel: 'novel.txt', workdir: 'outline/wk' });
+      if (ch.exitCode !== 0) throw new Error(`引擎分卷失败：${(ch.stderr || ch.stdout).slice(-400)}`);
+      const files = await listWorkspaceFiles(workspaceId);
+      const volPaths = files.filter((f) => /^outline\/wk\/vol-\d+\.txt$/.test(f.path)).map((f) => f.path).sort();
+      for (const p of volPaths) volumes.push(await readWorkspaceFile(workspaceId, p));
+      if (volumes.length === 0) throw new Error('引擎分卷没有产出 vol-*.txt（检查技能脚本版本）');
+      engineArtifacts = { workspaceId, slug, gatesSource: 'engine' };
+    } else {
+      const vols = splitVolumes(project.rawScript, 15);
+      volumes.push(...vols.map((v) => v.text));
+    }
+
+    // 2) 分卷摘要（创作层，走 BigBanana 自己的模型配置）
+    const summaries = await summarizeVolumes(
+      volumes.map((text, i) => ({ index: i + 1, title: `卷 ${i + 1}`, text })),
+      model, onProgress, signal
+    );
+
+    // 3) 骨架快版（创作层）
+    const { adaptation: skel, gates: browserGates } = await generateSkeleton(
+      summaries, base.params, model, onProgress, signal, engineOn ? 0 : 2
+    );
+    let draft: AdaptationOutline = { ...skel, episodes: [], skeletonApproved: false, volumeSummaries: summaries, engineArtifacts };
+
+    // 4) 质量门：引擎在 → 真实 validate --stage skeleton（✗ 原样回炉）；否则浏览器内移植版
+    let gates: OutlineGateResult[];
+    if (engineOn) {
+      const jsonPath = artifactJsonPath(slug, 'outline');
+      await writeWorkspaceFile(workspaceId, jsonPath, JSON.stringify(outlineJsonOf(draft, project.title), null, 2));
+      gates = [];
+      for (let round = 0; round <= 2; round++) {
+        onProgress(round === 0 ? '引擎校验：novel-outline validate --stage skeleton…' : `引擎质量门未过，第 ${round} 次回炉修复…`, 0.2 + round * 0.06);
+        const r = await runOp({ op: 'outline_validate', workspace: workspaceId, slug, stage: 'skeleton' });
+        const parsed = parseEngineGateOutput(r.stdout, r.stderr);
+        gates = parsed.gates.length ? parsed.gates : gates;
+        if (parsed.pass) break;
+        if (round === 2) break;
+        const fixed = await repairSkeleton(summaries, base.params, draft, r.stdout + (r.stderr ? `\n${r.stderr}` : ''), model, signal);
+        draft = { ...draft, ...fixed };
+        await writeWorkspaceFile(workspaceId, jsonPath, JSON.stringify(outlineJsonOf(draft, project.title), null, 2));
+      }
+    } else {
+      gates = browserGates.length ? browserGates : runOutlineGates(draft, 'skeleton');
+    }
+
     updateProject({
-      adaptation: {
-        ...adaptation,
-        volumeSummaries: summaries,
-        gates,
-        gatesStage: 'skeleton',
-      },
+      adaptation: { ...draft, gates, gatesStage: 'skeleton', engineArtifacts: engineOn ? engineArtifacts : draft.engineArtifacts },
     });
   });
 
   const approveSkeleton = () => withBusy(async (signal, onProgress) => {
     const model = project.shotGenerationModel || '';
-    const base: AdaptationOutline = { ...(outline!), skeletonApproved: true, updatedAt: Date.now() };
+    let draft: AdaptationOutline = { ...(outline as AdaptationOutline), skeletonApproved: true, updatedAt: Date.now() };
+
+    // 1) 分批写分集（创作层，每批 ≤ 10 集）
     onProgress('拍板生效，开始分批写分集梗概…', 0.05);
-    const { episodes, gates } = await generateEpisodes(base, model, onProgress, signal);
-    const full: AdaptationOutline = { ...base, episodes, gates, gatesStage: 'full', gatesPassedAt: gates.every((g) => g.ok) ? Date.now() : undefined };
+    const { episodes, gates: localGates } = await generateEpisodes(draft, model, onProgress, signal);
+    draft = { ...draft, episodes };
+
+    let gates: OutlineGateResult[] = localGates;
+    let assetsJson: unknown = undefined;
+    let reportPath: string | undefined;
+
+    if (engineOn) {
+      const jsonPath = artifactJsonPath(slug, 'outline');
+      await ensureWorkspace(workspaceId);
+      await writeWorkspaceFile(workspaceId, 'novel.txt', project.rawScript);
+      await writeWorkspaceFile(workspaceId, jsonPath, JSON.stringify(outlineJsonOf(draft, project.title), null, 2));
+
+      // 2) 真实 validate --stage full，✗ 原样回炉
+      for (let round = 0; round <= 2; round++) {
+        onProgress(round === 0 ? '引擎校验：novel-outline validate --stage full…' : `引擎质量门未过，第 ${round} 次回炉修复…`, 0.72 + round * 0.06);
+        const r = await runOp({ op: 'outline_validate', workspace: workspaceId, slug, stage: 'full' });
+        const parsed = parseEngineGateOutput(r.stdout, r.stderr);
+        gates = parsed.gates.length ? parsed.gates : gates;
+        if (parsed.pass) break;
+        if (round === 2) break;
+        const fixed = await repairEpisodes(draft, draft.episodes, r.stdout + (r.stderr ? `\n${r.stderr}` : ''), model, signal);
+        draft = { ...draft, episodes: fixed };
+        await writeWorkspaceFile(workspaceId, jsonPath, JSON.stringify(outlineJsonOf(draft, project.title), null, 2));
+      }
+
+      // 3) 真实 assets：资产清单口径与技能完全一致
+      onProgress('引擎汇总资产清单（novel-outline assets）…', 0.9);
+      const ar = await runOp({ op: 'outline_assets', workspace: workspaceId, slug });
+      if (ar.exitCode === 0 && ar.stdout.trim()) assetsJson = parseJsonWithRecovery(ar.stdout);
+
+      // 4) 真实 render：单页评审报告落盘，浏览器直接打开
+      onProgress('引擎渲染单页评审报告（novel-outline render）…', 0.96);
+      const rr = await runOp({ op: 'outline_render', workspace: workspaceId, slug, lang: 'zh' });
+      if (rr.exitCode === 0 && rr.output) reportPath = rr.output;
+    }
+
     updateProject({
       adaptation: {
-        ...full,
-        assetInventory: buildAssetInventory(full),
+        ...draft,
+        gates,
+        gatesStage: 'full',
+        gatesPassedAt: gates.every((g) => g.ok) ? Date.now() : undefined,
+        assetInventory: buildAssetInventory(draft),
+        engineArtifacts: engineOn
+          ? { workspaceId, slug, reportPath, assetsJson, gatesSource: 'engine' }
+          : (draft.engineArtifacts ?? null),
       },
     });
   });
@@ -213,7 +321,7 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
       title: '重新出骨架', type: 'warning', showCancel: true,
       confirmText: '重新出骨架', cancelText: '取消',
       onConfirm: () => {
-        updateProject({ adaptation: { ...(outline!), episodes: [], skeletonApproved: false, gates: null, assetInventory: undefined } });
+        updateProject({ adaptation: { ...(outline!), episodes: [], skeletonApproved: false, gates: null, assetInventory: undefined, engineArtifacts: outline?.engineArtifacts ? { ...outline.engineArtifacts, reportPath: undefined, assetsJson: undefined } : null } });
         startAdaptation();
       },
     });
@@ -236,8 +344,8 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
   };
 
   const gates = outline?.gates ?? null;
-  const gatesPassed = outlineGatesPassed(gates);
   const inventory: OutlineAssetRow[] = outline?.assetInventory ?? [];
+  const engineReport = outline?.engineArtifacts?.reportPath;
 
   return (
     <div className="h-full overflow-y-auto p-8 space-y-6">
@@ -249,8 +357,8 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
             <h1 className="text-xl font-bold text-[var(--text-primary)]">改编大纲 <span className="text-xs font-mono text-[var(--text-muted)]">shuohao-skills 流水线</span></h1>
           </div>
           <p className="text-xs text-[var(--text-muted)] mt-1 max-w-3xl leading-relaxed">
-            小说 → 分卷摘要 → 骨架快版（砍线 / 合人 / 排爽点）→ <b className="text-[var(--text-secondary)]">导演拍板</b> → 分批写分集（每批 ≤ {MAX_EPISODES_PER_BATCH} 集）→ 14 道确定性质量门 → 资产清单（代码汇总）。
-            先拍板再细化；质量门未过会带着 ✗ 详情自动回炉修复。
+            小说 → 分卷摘要 → 骨架快版（砍线 / 合人 / 排爽点）→ <b className="text-[var(--text-secondary)]">导演拍板</b> → 分批写分集（每批 ≤ {MAX_EPISODES_PER_BATCH} 集）→ 质量门 → 资产清单。
+            引擎模式下调用的就是本机 shuohao-skills 的真实脚本（chunk / validate / assets / render），校验口径与技能仓库零偏差。
           </p>
         </div>
         {outline && (
@@ -258,10 +366,32 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
             {outline.skeletonApproved
               ? <span className="px-2 py-1 rounded bg-[var(--success)]/10 text-[var(--success)] border border-[var(--success)]/30">骨架已拍板</span>
               : <span className="px-2 py-1 rounded bg-[#d9a13c]/10 text-[#d9a13c] border border-[#d9a13c]/30">骨架待拍板</span>}
-            {episodesDone && gatesPassed && (
+            {episodesDone && outline.gates && outline.gates.every((g) => g.ok) && (
               <span className="px-2 py-1 rounded bg-[var(--success)]/10 text-[var(--success)] border border-[var(--success)]/30">大纲完成</span>
             )}
           </div>
+        )}
+      </div>
+
+      {/* 引擎状态横幅 */}
+      <div className={`rounded-xl border p-3 flex items-center gap-3 text-xs ${engineOn ? 'border-[var(--success)]/40 bg-[var(--success)]/5' : 'border-[#d9a13c]/40 bg-[#d9a13c]/5'}`}>
+        {engine === undefined ? (
+          <><Loader2 className="w-4 h-4 animate-spin text-[var(--text-muted)]" /><span className="text-[var(--text-muted)]">正在探测本地技能引擎…</span></>
+        ) : engineOn ? (
+          <>
+            <Cpu className="w-4 h-4 text-[var(--success)]" />
+            <span className="text-[var(--text-secondary)]">
+              <b>引擎已连接</b> —— 六阶段真实脚本就绪（{Object.values(engine!.skills).filter(Boolean).length}/6），技能库：{engine!.skillsDir}
+            </span>
+            <span className="ml-auto text-[10px] font-mono text-[var(--text-muted)]">chunk · validate --stage · checkup · assets · render · export</span>
+          </>
+        ) : (
+          <>
+            <PlugZap className="w-4 h-4 text-[#d9a13c]" />
+            <span className="text-[var(--text-secondary)]">
+              <b>引擎未启动（降级模式）</b> —— 当前用浏览器内移植版校验。在仓库根目录运行 <code className="px-1 rounded bg-[var(--bg-tertiary)] font-mono">npm run shuohao</code> 启动真实技能引擎（需本机装有 shuohao-skills 仓库与 Node ≥ 18），env <code className="px-1 rounded bg-[var(--bg-tertiary)] font-mono">SHUOHAO_SKILLS_DIR</code> 指定技能库路径。
+            </span>
+          </>
         )}
       </div>
 
@@ -439,7 +569,9 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
             <BeatTimeline outline={outline} />
           </div>
 
-          <GatePanel gates={gates && outline.gatesStage === 'skeleton' ? gates : runOutlineGates(outline, 'skeleton')} />
+          {outline.gatesStage === 'skeleton' || !outline.skeletonApproved ? (
+            <GatePanel gates={gates ?? runOutlineGates(outline, 'skeleton')} source={outline.engineArtifacts?.gatesSource ?? 'browser'} />
+          ) : null}
         </div>
       )}
 
@@ -450,7 +582,19 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
             <FileStack className="w-4 h-4 text-[var(--accent-text)]" /> 分集梗概（{outline.episodes?.length ?? 0}/{outline.params.episodes}）
           </div>
 
-          <GatePanel gates={gates} />
+          <GatePanel gates={gates} source={outline.engineArtifacts?.gatesSource ?? 'browser'} />
+
+          {/* 引擎渲染的单页评审报告（真实 render 产物） */}
+          {engineOn && engineReport && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs font-mono uppercase tracking-widest text-[var(--text-muted)]">
+                单页评审报告（novel-outline render 原样产出）
+                <a className="text-[var(--accent-text)] ml-auto" href={workspaceUrl(workspaceId, engineReport)} target="_blank" rel="noreferrer">新窗口打开</a>
+              </div>
+              <iframe title="outline-report" className="w-full rounded-xl border border-[var(--border-primary)] bg-white" style={{ height: '70vh' }}
+                src={workspaceUrl(workspaceId, engineReport)} />
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             {(outline.episodes ?? []).map((e) => (
@@ -476,11 +620,21 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
             ))}
           </div>
 
-          {/* 资产清单（代码汇总） */}
+          {/* 资产清单：引擎在 → 技能 assets 命令原样 JSON；离线 → 本地汇总表 */}
+          {outline.engineArtifacts?.assetsJson != null && (
+            <div className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-primary)] p-4">
+              <div className="flex items-center gap-2 text-sm font-bold text-[var(--text-primary)] mb-3">
+                <FileStack className="w-4 h-4 text-[var(--accent-text)]" /> 资产清单
+                <span className="text-xs font-normal text-[var(--text-muted)]">（novel-outline assets 命令原样输出）</span>
+              </div>
+              <EngineAssetsBlock data={outline.engineArtifacts.assetsJson} />
+            </div>
+          )}
           {inventory.length > 0 && (
             <div className="rounded-xl border border-[var(--border-primary)] bg-[var(--bg-primary)] p-4">
               <div className="flex items-center gap-2 text-sm font-bold text-[var(--text-primary)] mb-3">
-                <FileStack className="w-4 h-4 text-[var(--accent-text)]" /> 资产清单 <span className="text-xs font-normal text-[var(--text-muted)]">（脚本自动汇总，出现集 / 资产量折算 / 一次性场景复用）</span>
+                <FileStack className="w-4 h-4 text-[var(--accent-text)]" /> 出现集一览
+                <span className="text-xs font-normal text-[var(--text-muted)]">（本地汇总：{engineOn ? '与引擎 assets 对照用' : '引擎未启动，此为降级口径'}）</span>
               </div>
               <table className="w-full text-xs">
                 <thead>
@@ -506,9 +660,9 @@ const StageOutline: React.FC<Props> = ({ project, updateProject, onGeneratingCha
             </div>
           )}
 
-          {episodesDone && !gatesPassed && (
+          {episodesDone && outline.gates && !outline.gates.every((g) => g.ok) && (
             <div className="rounded-xl border border-[#d1543c]/50 bg-[#d1543c]/5 p-4 text-xs text-[#d1543c] flex items-center gap-2">
-              <Ban className="w-4 h-4" /> 分集已写完但质量门未全过——点「继续写分集」会带 ✗ 详情自动修复。
+              <Ban className="w-4 h-4" /> 分集已写完但质量门未全过——点「继续写分集」会带 ✗ 详情自动回炉修复。
             </div>
           )}
         </div>

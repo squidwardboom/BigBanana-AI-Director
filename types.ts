@@ -675,5 +675,19 @@ export interface AdaptationOutline {
   gatesPassedAt?: number;
   /** 代码汇总的资产清单 */
   assetInventory?: OutlineAssetRow[];
+  /** 引擎产物（真实技能 CLI 的落盘产物与资产 JSON；引擎离线时为空） */
+  engineArtifacts?: AdaptationEngineArtifacts | null;
   updatedAt?: number;
+}
+
+/** 本地技能引擎（server/shuohaoServer.mjs）产出的落盘产物登记 */
+export interface AdaptationEngineArtifacts {
+  workspaceId: string;
+  slug: string;
+  /** 单页评审报告（真实 render 产物，浏览器经 /workspace 静态入口打开） */
+  reportPath?: string;
+  /** 引擎 `assets` 命令输出的资产清单 JSON（口径与 shuohao-skills 一致） */
+  assetsJson?: unknown;
+  /** 质量门结果来源：engine = 技能脚本原样输出；browser = 浏览器内移植版 */
+  gatesSource: 'engine' | 'browser';
 }

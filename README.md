@@ -84,15 +84,20 @@
 
 ## 🆕 阶段 00 · 烁皓改编大纲（shuohao-skills 集成）
 
-在「剧本与故事」之前新增 **改编大纲** 阶段，把 [shuohao-skills](https://github.com/eternityspring/shuohao-skills) 的 `novel-outline` 工作流移植进前端：
+在「剧本与故事」之前新增 **改编大纲** 阶段，把 [shuohao-skills](https://github.com/eternityspring/shuohao-skills) 的 `novel-outline` 工作流移植进前端。**两种模式**：
 
-* **长文本分卷**：按章节标题分卷（识别不出按字数切，上限 60 卷不静默截断），逐卷并发摘要再做骨架；
+* **引擎模式（推荐）**：本仓库自带本地伴随服务 `server/shuohaoServer.mjs`（`npm run shuohao` 启动，默认 127.0.0.1:7791），直接 spawn 本机 shuohao-skills 仓库的**真实六阶段脚本**——分卷（`chunk`）、校验（`validate --stage skeleton|beats|full`）、资产清单（`assets`）、单页评审报告（`render`）都是技能原样产出，**校验口径零偏差**，报告在页面里直接打开；
+* **降级模式**：引擎未启动时自动回退到浏览器内移植版（`services/shuohaoGates.ts` 的 14 道门移植 + 本地分卷），页面顶部横幅明示当前模式。
+
+工作流（两种模式一致）：
+
+* **长文本分卷**：按章节标题分卷（识别不出按字数切，上限 60 卷不静默截断），逐卷摘要再做骨架；
 * **先拍板再细化**：先出骨架快版（改编说明三张表 + 原文逐字依据 + 人物分档表 + 场景表 + 爽点节奏轴），导演拍板后才允许写分集，分集每批 ≤ 10 集；
-* **14 道确定性质量门**：从 novel-outline 的 `gateReport()` 逐行移植（阈值、判据、门 id、失败文案与原仓库对齐）——主角组 1–5、配角 ≤10、功能角色 ≤10、主场景 `4+⌈集数/10⌉` 夹 5–15、道具 ≤8、爽点间隔 ≤3 无真空、首集钩子、大爆点不压轴、三栏齐全、同框拆解、生成难点预警、引用完整、叙述体无引号；门未过会带着 ✗ 详情**自动回炉修复**；
-* **资产清单由代码汇总**：出现集/次数、一次性场景复用方案、角色三档资产量折算（主角全套设定图 / 配角半身参考 / 功能角色提示词直出）、生成难点标注——不让模型写；
-* **一键应用到剧本**：任选一集，生成结构化「剧本任务书」写进「剧本与故事」，无缝接入既有的剧本拆解 → 资产 → 镜头流水线。
+* **质量门未过自动回炉**：把技能 CLI 输出的 ✗ 详情（含生成难点关键词扫描的原文口径）交回模型逐条修复，≤ 2 轮；
+* **资产清单**：引擎模式用技能 `assets` 命令原样 JSON（出现集/次数/复用方案/生成难点），降级模式用代码汇总表；
+* **一键应用到剧本**：任选一集生成结构化「剧本任务书」写进「剧本与故事」，无缝接入既有的剧本拆解 → 资产 → 镜头流水线。
 
-涉及文件：`services/shuohaoGates.ts`（质量门）、`services/adaptationService.ts`（分卷/骨架/分批流水线）、`components/StageOutline.tsx`（阶段 UI）、`docs/改编大纲-烁皓技能集成.md`（设计说明）。
+涉及文件：`server/shuohaoServer.mjs`（技能引擎服务）、`services/shuohaoBridge.ts`（前端桥接）、`services/shuohaoGates.ts`（质量门移植/降级）、`services/adaptationService.ts`（分卷/骨架/分批/修复流水线）、`components/StageOutline.tsx`（阶段 UI）、`docs/改编大纲-烁皓技能集成.md`（设计说明）。
 
 ## 技术架构
 
